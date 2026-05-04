@@ -1,0 +1,98 @@
+benchmark:
+  name: "STMixGAN Training"
+  workdir: "./"
+  cache_file: "./cache_train.db"
+  cache_exclude_vars: ["results_dir", "project_dir"] 
+  executor: slurm
+  search_method: exhaustive
+  repetitions: 4
+  parallel: 2
+  probes:
+    system_snapshot: true
+    resource_sampling: true
+    gpu_sampling: true
+    sampling_interval: 1.0
+
+vars:
+  light_conv:
+    type: str
+    sweep:
+      mode: list
+      values: ["standard", "dwsb", "sqnxt", "fire", "tied", "global", "dws"]
+
+  dataset:
+    type: str
+    sweep:
+      mode: list
+      values: ["moving_mnist", "taasrad19"]
+
+  project_dir:
+    type: str
+    expr: "/home/<some-user>/st-mix-gan-main"
+
+  results_dir:
+    type: str
+    expr: "{{ execution_dir }}/experiments_results"
+
+command:
+  template: >
+    python {{ project_dir }}/trainer.py
+    --num_epochs 100
+    --batch_size 10
+    --working_dir {{ results_dir }}
+    --start_epoch_saving 100
+    --normalize_values
+    --light_conv {{ light_conv }}
+    --dataset {{ dataset }}
+    --result_folder_suffix {{ repetition }}
+
+scripts:
+  - name: "stmixgan_train"
+    submit: "bash"
+    script_template: |
+      #!/bin/bash
+      #SBATCH --job-name=stmixgan_train_{{ light_conv }}_{{ dataset }}
+      #SBATCH --ntasks=1
+      #SBATCH --nodes=1
+      #SBATCH --ntasks-per-node=1
+      #SBATCH --nodelist=sirocco[22-25]
+      #SBATCH --time=24:00:00
+      #SBATCH -o batch%j.out
+      #SBATCH -e batch%j.err
+      #SBATCH --exclusive
+      #SBATCH --constraint sirocco
+      
+      module load compiler/cuda/12.3
+
+      eval "$(conda shell.bash hook)"
+      conda activate iops_dev
+
+
+      module add compiler/gcc/11.2.0
+      module add linalg/openblas/0.3.9
+
+      {{ command.template }} 2>&1 | tee {{ execution_dir }}/train.log
+
+    parser:
+      file: "{{ results_dir }}/training_{{ dataset }}_{{ light_conv }}_{{ repetition }}/metrics/execution_metrics_training_{{ light_conv }}_{{ dataset }}.csv"
+      metrics:
+        - name: total_training_time_sec
+        - name: average_epoch_time_sec
+        - name: min_epoch_gen_loss
+        - name: min_epoch
+      parser_script: |
+        import csv
+        def parse(file_path):
+            with open(file_path) as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+            return {
+                "total_training_time_sec": float(row["total_training_time_sec"]),
+                "average_epoch_time_sec": float(row["average_epoch_time_sec"]),
+                "min_epoch_gen_loss": float(row["min_epoch_gen_loss"]),
+                "min_epoch": int(row["min_epoch"]),
+            }
+
+output:
+  sink:
+    type: csv

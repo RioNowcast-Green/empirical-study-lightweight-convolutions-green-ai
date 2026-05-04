@@ -1,0 +1,11 @@
+torch==2.10.0
+timm==1.0.25
+numpy==2.4.3
+properscoring==0.1
+scipy==1.17.1
+pysteps==1.20.0
+tqdm==4.67.3
+pandas==3.0.1
+scikit-image==0.26.0
+codecarbon==3.2.5
+torchinfo==1.8.0

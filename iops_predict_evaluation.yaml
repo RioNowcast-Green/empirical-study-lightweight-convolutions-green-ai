@@ -1,0 +1,132 @@
+benchmark:
+  name: "STMixGAN Prediction - Evaluation"
+  workdir: "./"
+  cache_file: "./cache_predict.db"
+  cache_exclude_vars: ["results_dir", "weight_file", "project_dir"] 
+  executor: slurm
+  search_method: exhaustive
+  repetitions: 4
+  parallel: 2
+  probes:
+    system_snapshot: true
+    resource_sampling: true
+    gpu_sampling: true
+    sampling_interval: 1.0
+
+vars:
+  light_conv:
+    type: str
+    sweep:
+      mode: list
+      values: ["standard", "dwsb", "sqnxt", "fire", "tied", "global", "dws"]
+
+  dataset:
+    type: str
+    sweep:
+      mode: list
+      values: ["moving_mnist", "taasrad19"]
+
+  project_dir:
+    type: str
+    expr: "/home/<some-user>/st-mix-gan-main"
+
+  results_dir:
+    type: str
+    expr: "{{ execution_dir }}/experiments_results"
+
+  weight_file:
+    type: str
+    expr: "{{ results_dir }}/training_{{ dataset }}_{{ light_conv }}_{{ repetition }}/weights/generator/{{ dataset }}_stmixnet_{{ light_conv }}_100.pth"
+
+command:
+  template: >
+    python {{ project_dir }}/predictor.py
+    --model_weight_file_path {{ weight_file }}
+    --working_dir {{ results_dir }}
+    --normalize_values
+    --light_conv {{ light_conv }}
+    --dataset {{ dataset }}
+    --result_folder_suffix {{ repetition }}
+
+scripts:
+  - name: "stmixgan_predict_evaluation"
+    submit: "bash"
+    script_template: |
+      #!/bin/bash
+      #SBATCH --job-name=stmixgan_pred_evaluation_{{ light_conv }}_{{ dataset }}
+      #SBATCH --ntasks=1
+      #SBATCH --nodes=1
+      #SBATCH --ntasks-per-node=1
+      #SBATCH --nodelist=sirocco[22-25]
+      #SBATCH --time=24:00:00
+      #SBATCH -o batch%j.out
+      #SBATCH -e batch%j.err
+      #SBATCH --exclusive
+      #SBATCH --constraint sirocco
+
+      module load compiler/cuda/12.3
+
+      eval "$(conda shell.bash hook)"
+      conda activate iops_dev
+
+      module add compiler/gcc/11.2.0
+      module add linalg/openblas/0.3.9 
+      
+      {{ command.template }} 2>&1 | tee {{ execution_dir }}/predict.log
+
+    parser:
+      file: "{{ results_dir }}/predict_{{ dataset }}_{{ light_conv }}_{{ repetition }}/metrics/execution_metrics_predict_{{ light_conv }}_{{ dataset }}.csv"
+      metrics:
+        - name: total_predict_time_sec
+        - name: total_predict_time_with_evaluation_sec
+        - name: MAE
+        - name: MSE
+        - name: RMSE
+        - name: SSIM
+        - name: PSNR
+        - name: CSI_avg
+        - name: POD_avg
+        - name: FAR_avg
+        - name: HSS_avg
+      parser_script: |
+        import csv
+        import os
+        def parse(file_path):
+            # Parse execution metrics
+            with open(file_path) as f:
+                reader = csv.DictReader(f)
+                exec_row = next(reader)
+
+            results = {
+                "total_predict_time_sec": float(exec_row["total_predict_time_sec"]),
+                "total_predict_time_with_evaluation_sec": float(exec_row["total_predict_time_with_evaluation_sec"]),
+            }
+
+            # Parse image quality metrics (MAE, MSE, RMSE, SSIM, PSNR)
+            metrics_dir = os.path.dirname(file_path)
+            img_file = os.path.join(
+                metrics_dir,
+                f"{vars['light_conv']}_{vars['dataset']}_image_metrics.csv"
+            )
+            with open(img_file) as f:
+                reader = csv.DictReader(f)
+                img_row = next(reader)
+            for m in ["MAE", "MSE", "RMSE", "SSIM", "PSNR"]:
+                results[m] = float(img_row[m])
+
+            # Parse threshold metrics (use first threshold row for avg values)
+            thr_file = os.path.join(
+                metrics_dir,
+                f"{vars['light_conv']}_{vars['dataset']}_threshold_metrics.csv"
+            )
+            with open(thr_file) as f:
+                reader = csv.DictReader(f)
+                thr_row = next(reader)
+            for m in ["CSI_avg", "POD_avg", "FAR_avg", "HSS_avg"]:
+                results[m] = float(thr_row[m])
+
+            return results
+
+output:
+  sink:
+    type: csv
